@@ -25,8 +25,8 @@ pgfault(struct UTrapframe *utf)
 	//   (see <inc/memlayout.h>).
 
 	// LAB 4: Your code here.
-        if((err&FEC_WR)==0 || (uvpt[PGNUM(addr)]&PTE_COW)==0){
-	//	cprintf("Where is the error %d\n",err&FEC_WR);
+        if((err&FEC_WR)==0 || (uvpt[PGNUM(addr)]&(PTE_W|PTE_COW))==0){
+		cprintf("Where is the error %d\n",err&FEC_WR);
 		panic("pgfault:invalid user trap");
 	}
 	// Allocate a new page, map it at a temporary location (PFTEMP),
@@ -39,8 +39,10 @@ pgfault(struct UTrapframe *utf)
         envid_t envid = sys_getenvid();
 	r = sys_page_alloc(envid,(void *)PFTEMP,PTE_P|PTE_W|PTE_U);
 	if(r<0) panic("pgfault:page allocation failed %e",r);
+
 	addr = ROUNDDOWN(addr,PGSIZE);
 	memcpy((void *)PFTEMP,(const void *)addr,PGSIZE);
+
 	if(sys_page_map(envid,(void *)PFTEMP, envid,addr,PTE_P|PTE_W|PTE_U)<0)
 		panic("pgfault:page map failed\n");
 	if(sys_page_unmap(envid,(void *)PFTEMP)<0)
@@ -68,7 +70,10 @@ duppage(envid_t envid, unsigned pn)
         //panic("duppage not implemented");
         envid_t parent_envid = sys_getenvid();
 	void *va = (void *)(pn*PGSIZE);
-       	
+        if(uvpt[pn] & PTE_SHARE){
+          if((r=sys_page_map(parent_envid,va,envid,va,uvpt[pn]&PTE_SYSCALL))<0)
+	      return r;	  
+	}else{       	
 	int perm = PTE_P | PTE_U;
 	if((uvpt[pn] & PTE_W) || (uvpt[pn] & PTE_COW)){
 	  perm |= PTE_COW;
@@ -76,10 +81,12 @@ duppage(envid_t envid, unsigned pn)
 	}
 	 if((r=sys_page_map(parent_envid,va,envid,va,perm))<0)
 		 panic("duppage:map01 failed %e",r);
-	 if((perm&PTE_COW) && (r=sys_page_map(parent_envid,va,parent_envid,va,perm))<0){
+	 if((perm&PTE_COW))
+		if( (r=sys_page_map(parent_envid,va,parent_envid,va,perm))<0){
 		 panic("duppage:map02 failed %e",r);
+		 return r;
 	 }
-        
+	}
   	return 0;
 }
 
@@ -129,6 +136,7 @@ fork(void)
 		panic("fork:set upcall failed %e\n",r);
 	if((r = sys_env_set_status(envid,ENV_RUNNABLE))<0)
 		panic("fork:set status failed %e\n",r);
+	//cprintf("forkid= %d\n", envid);
 	return envid;
        	
 }

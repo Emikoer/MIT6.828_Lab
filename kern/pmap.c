@@ -84,6 +84,8 @@ static void check_page_installed_pgdir(void);
 // If we're out of memory, boot_alloc should panic.
 // This function may ONLY be used during initialization,
 // before the page_free_list list has been set up.
+// Note that when this function is called, we are still using entry_pgdir,
+// which only maps the first 4MB of physical memory.
 static void *
 boot_alloc(uint32_t n)
 {
@@ -323,8 +325,10 @@ page_init(void)
 		if(i==0){
 		  pages[i].pp_ref = 1;
 	//IO hole && Extend Memory being used
-		}else if(i*PGSIZE>=IOPHYSMEM && i*PGSIZE<=first_free_extend_addr){
+		}else if(i*PGSIZE>=IOPHYSMEM && i*PGSIZE<EXTPHYSMEM){
 		        pages[i].pp_ref = 1;
+		}else if(i*PGSIZE>=EXTPHYSMEM && i*PGSIZE <= first_free_extend_addr){
+		       pages[i].pp_ref = 1;
 		}else if(i*PGSIZE==MPENTRY_PADDR){
 		        pages[i].pp_ref = 1;
 		}else{
@@ -359,7 +363,7 @@ page_alloc(int alloc_flags)
 	page_free_list = alloc_space->pp_link;
 	alloc_space->pp_link = NULL;
 
-	if(alloc_flags && ALLOC_ZERO){
+	if(alloc_flags & ALLOC_ZERO){
 	   memset(page2kva(alloc_space),0,PGSIZE);
 	}
         
@@ -500,14 +504,14 @@ int
 page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 {
 	// Fill this function in
-	pte_t *pt=pgdir_walk(pgdir,va,1);
-	if(!pt) return -E_NO_MEM;
+	pte_t *pte=pgdir_walk(pgdir,va,1);
+	if(!pte) return -E_NO_MEM;
 
 	pp->pp_ref++;
-	if(*pt & PTE_P){
+	if(*pte & PTE_P){
 		page_remove(pgdir,va);
 	}
-	*pt = page2pa(pp)|perm|PTE_P;
+	*pte = PTE_ADDR(page2pa(pp))|perm|PTE_P;
 	return 0;
         
 }
@@ -554,14 +558,27 @@ void
 page_remove(pde_t *pgdir, void *va)
 {
 	// Fill this function in
-	pte_t *pt;
-	struct PageInfo* pageinfo = page_lookup(pgdir,va,&pt);
-        if(!pageinfo) return;
+	pte_t *pte;
+	struct PageInfo* pageinfo = page_lookup(pgdir,va,&pte);
+        if(pageinfo && (*pte &PTE_P)){
 	page_decref(pageinfo);
-	*pt = 0;
+	*pte = 0;
 	tlb_invalidate(pgdir,va);
-        
+	}
 }
+/*void
+page_remove(pde_t *pgdir, void *va)
+{
+	// Fill this function in
+	pte_t *pte;
+	struct PageInfo *un_page=page_lookup(pgdir, va, &pte); //there is a hint above, but I'm still wrong
+	if(un_page && (*pte & PTE_P)){ //because PTE may be nonexistent, so PTE_P is necessary
+		//if(un_page->pp_ref==1) whether the pp_ref is 1 or not, I have remove a PTE here
+		tlb_invalidate(pgdir, va);
+		*pte=0;
+		page_decref(un_page);
+	}
+}*/
 
 //
 // Invalidate a TLB entry, but only if the page tables being
